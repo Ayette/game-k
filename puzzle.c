@@ -1,9 +1,10 @@
 #include "puzzle.h"
+
 #define FEEDBACK_MS 600
 #define MESSAGE_MS  2000
 #define ETAT_OPTION 0
 
- void set_message(puzel *p, const char *texte, SDL_Color color)
+static void set_message(puzel *p, const char *texte, SDL_Color color)
 {
     snprintf(p->message, sizeof(p->message), "%s", texte);
     p->message_color = color;
@@ -11,7 +12,7 @@
     p->show_message = 1;
 }
 
- void afficher_texte(SDL_Renderer *renderer, TTF_Font *font,
+static void afficher_texte(SDL_Renderer *renderer, TTF_Font *font,
                            const char *texte, SDL_Color color, int x, int y)
 {
     SDL_Surface *surface;
@@ -43,7 +44,7 @@
     SDL_FreeSurface(surface);
 }
 
- void dessiner_bouton_image(SDL_Renderer *renderer, SDL_Texture *texture, SDL_Rect rect, int hover)
+static void dessiner_bouton_image(SDL_Renderer *renderer, SDL_Texture *texture, SDL_Rect rect, int hover)
 {
     if (!texture)
         return;
@@ -60,7 +61,66 @@
     }
 }
 
- void mettre_a_jour_layout_puzzle(puzel *p, SDL_Renderer *renderer)
+static void afficher_timer_animation(SDL_Renderer *renderer, puzel *p)
+{
+    int elapsed, remaining;
+    float ratio;
+    int levels;
+    int i;
+
+    SDL_Rect frame;
+    SDL_Rect inner;
+    SDL_Rect fill;
+
+    if (!p->tick_started || p->termine || p->perdu)
+        return;
+
+    elapsed = SDL_GetTicks() - p->timer_start;
+    remaining = (int)p->timer_duration - elapsed;
+
+    if (remaining < 0)
+        remaining = 0;
+
+    ratio = (float)remaining / (float)p->timer_duration;
+
+    levels = (int)(ratio * 6.0f + 0.99f);
+    if (levels < 0) levels = 0;
+    if (levels > 6) levels = 6;
+
+    frame = p->timer_rect;
+
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderFillRect(renderer, &frame);
+
+    inner.x = frame.x + 14;
+    inner.y = frame.y + 14;
+    inner.w = frame.w - 28;
+    inner.h = frame.h - 28;
+
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+    SDL_RenderFillRect(renderer, &inner);
+
+    if (levels > 0)
+    {
+        int part_w = inner.w / 6;
+
+        for (i = 0; i < levels; i++)
+        {
+            fill.x = inner.x + i * part_w;
+            fill.y = inner.y;
+            fill.w = part_w;
+            fill.h = inner.h;
+
+            SDL_SetRenderDrawColor(renderer, 200 + i * 8, 45 + i * 8, 0, 255);
+            SDL_RenderFillRect(renderer, &fill);
+        }
+    }
+
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderDrawRect(renderer, &frame);
+}
+
+static void mettre_a_jour_layout_puzzle(puzel *p, SDL_Renderer *renderer)
 {
     int w, h;
     float sx, sy;
@@ -80,6 +140,11 @@
     p->btn_option.h = (int)(85 * sy);
     p->btn_option.x = (int)(1090 * sx);
     p->btn_option.y = (int)(25 * sy);
+
+    p->timer_rect.x = (int)(40 * sx);
+    p->timer_rect.y = (int)(60 * sy);
+    p->timer_rect.w = (int)(260 * sx);
+    p->timer_rect.h = (int)(55 * sy);
 
     w_piece = p->zone_puzzle.w / 3;
     h_piece = p->zone_puzzle.h / 3;
@@ -103,35 +168,46 @@
     }
 }
 
- void verifier_fin_tick(puzel *p)
+static void verifier_fin_tick(puzel *p)
 {
+    Uint32 now;
+
     if (p->termine || p->perdu)
         return;
 
-    if (p->tick_started && p->tick_channel != -1)
+    if (p->tick_started)
     {
-        if (!Mix_Playing(p->tick_channel))
+        now = SDL_GetTicks();
+
+        if (now - p->timer_start >= p->timer_duration)
         {
+            if (p->tick_channel != -1)
+                Mix_HaltChannel(p->tick_channel);
+
             p->perdu = 1;
             p->dragging = 0;
             p->selected_piece = -1;
             p->tick_started = 0;
             p->tick_channel = -1;
+
             set_message(p, "Temps ecoule !", (SDL_Color){220, 0, 0, 255});
         }
     }
 }
 
- void lancer_tick_si_necessaire(puzel *p)
+static void lancer_tick_si_necessaire(puzel *p)
 {
     if (p->termine || p->perdu)
         return;
 
-    if (!p->tick_started && p->tick_channel == -1 && p->tick_sound)
+    if (!p->tick_started)
     {
-        p->tick_channel = Mix_PlayChannel(-1, p->tick_sound, 0);
-        if (p->tick_channel != -1)
-            p->tick_started = 1;
+        p->timer_start = SDL_GetTicks();
+
+        if (p->tick_sound)
+            p->tick_channel = Mix_PlayChannel(-1, p->tick_sound, 0);
+
+        p->tick_started = 1;
     }
 }
 
@@ -191,6 +267,14 @@ int initialiser_puzzle(puzel *p, SDL_Renderer *renderer)
 
     p->tick_channel = -1;
     p->tick_started = 0;
+
+    p->timer_start = 0;
+    p->timer_duration = 11000;
+
+    p->timer_rect.x = 40;
+    p->timer_rect.y = 60;
+    p->timer_rect.w = 260;
+    p->timer_rect.h = 55;
 
     p->show_message = 0;
     p->message[0] = '\0';
@@ -308,14 +392,17 @@ void generer_puzzle(puzel *p, SDL_Renderer *renderer)
     p->termine = 0;
     p->perdu = 0;
     p->sound_played = 0;
+
     p->tick_channel = -1;
     p->tick_started = 0;
+
+    p->timer_start = 0;
+    p->timer_duration = 11000;
+
     p->show_message = 0;
     p->message[0] = '\0';
 
     mettre_a_jour_layout_puzzle(p, renderer);
-
-    /* هنا عمدا ما نطلقوش tick */
 }
 
 void gerer_evenements_puzzle(puzel *p, SDL_Renderer *renderer, int *etat)
@@ -326,9 +413,7 @@ void gerer_evenements_puzzle(puzel *p, SDL_Renderer *renderer, int *etat)
 
     mettre_a_jour_layout_puzzle(p, renderer);
 
-  
     lancer_tick_si_necessaire(p);
-
     verifier_fin_tick(p);
 
     SDL_GetMouseState(&mx, &my);
@@ -351,6 +436,7 @@ void gerer_evenements_puzzle(puzel *p, SDL_Renderer *renderer, int *etat)
             {
                 if (p->tick_channel != -1)
                     Mix_HaltChannel(p->tick_channel);
+
                 p->tick_channel = -1;
                 p->tick_started = 0;
                 *etat = ETAT_OPTION;
@@ -361,6 +447,7 @@ void gerer_evenements_puzzle(puzel *p, SDL_Renderer *renderer, int *etat)
             {
                 if (p->tick_channel != -1)
                     Mix_HaltChannel(p->tick_channel);
+
                 p->tick_channel = -1;
                 p->tick_started = 0;
                 *etat = ETAT_OPTION;
@@ -384,7 +471,11 @@ void gerer_evenements_puzzle(puzel *p, SDL_Renderer *renderer, int *etat)
             }
         }
 
-        if (e.type == SDL_MOUSEMOTION && p->dragging && p->selected_piece != -1 && !p->perdu && !p->termine)
+        if (e.type == SDL_MOUSEMOTION &&
+            p->dragging &&
+            p->selected_piece != -1 &&
+            !p->perdu &&
+            !p->termine)
         {
             p->piece_rect[p->selected_piece].x = e.motion.x - p->offset_x;
             p->piece_rect[p->selected_piece].y = e.motion.y - p->offset_y;
@@ -392,7 +483,10 @@ void gerer_evenements_puzzle(puzel *p, SDL_Renderer *renderer, int *etat)
 
         if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT)
         {
-            if (p->dragging && p->selected_piece != -1 && !p->perdu && !p->termine)
+            if (p->dragging &&
+                p->selected_piece != -1 &&
+                !p->perdu &&
+                !p->termine)
             {
                 sel = p->selected_piece;
                 ok = 0;
@@ -457,6 +551,8 @@ void afficher_puzzle(puzel *p, SDL_Renderer *renderer)
 
     SDL_RenderClear(renderer);
     SDL_RenderCopy(renderer, p->background, NULL, &bg);
+
+    afficher_timer_animation(renderer, p);
 
     if (p->image)
     {
@@ -526,6 +622,7 @@ void afficher_puzzle(puzel *p, SDL_Renderer *renderer)
     if (p->termine)
     {
         SDL_SetRenderDrawColor(renderer, 0, 220, 0, 255);
+
         {
             SDL_Rect border = {
                 p->zone_puzzle.x - 4,
@@ -533,12 +630,14 @@ void afficher_puzzle(puzel *p, SDL_Renderer *renderer)
                 p->zone_puzzle.w + 8,
                 p->zone_puzzle.h + 8
             };
+
             SDL_RenderDrawRect(renderer, &border);
 
             border.x -= 2;
             border.y -= 2;
             border.w += 4;
             border.h += 4;
+
             SDL_RenderDrawRect(renderer, &border);
         }
     }
@@ -546,6 +645,7 @@ void afficher_puzzle(puzel *p, SDL_Renderer *renderer)
     if (p->perdu)
     {
         SDL_SetRenderDrawColor(renderer, 220, 0, 0, 255);
+
         {
             SDL_Rect border = {
                 p->zone_puzzle.x - 4,
@@ -553,12 +653,14 @@ void afficher_puzzle(puzel *p, SDL_Renderer *renderer)
                 p->zone_puzzle.w + 8,
                 p->zone_puzzle.h + 8
             };
+
             SDL_RenderDrawRect(renderer, &border);
 
             border.x -= 2;
             border.y -= 2;
             border.w += 4;
             border.h += 4;
+
             SDL_RenderDrawRect(renderer, &border);
         }
     }
@@ -587,10 +689,12 @@ void afficher_puzzle(puzel *p, SDL_Renderer *renderer)
             if (p->font)
             {
                 int tw, th;
+
                 if (TTF_SizeUTF8(p->font, p->message, &tw, &th) == 0)
                 {
                     int tx = msg_bg.x + (msg_bg.w - tw) / 2;
                     int ty = msg_bg.y + (msg_bg.h - th) / 2;
+
                     afficher_texte(renderer, p->font, p->message, p->message_color, tx, ty);
                 }
             }

@@ -55,6 +55,10 @@ typedef struct
     int tick_channel;
     int tick_started;
 
+    Uint32 timer_start;
+    Uint32 timer_duration;
+    SDL_Rect timer_rect;
+
     char message[128];
     SDL_Color message_color;
     Uint32 message_timer;
